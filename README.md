@@ -22,6 +22,7 @@ The default parameters can be overridden by setting environment variables on the
  * **KEEP_IMAGES** - List of images to avoid cleaning, e.g. "ubuntu:trusty, ubuntu:latest". Defaults to clean all unused images.
  * **KEEP_CONTAINERS** - List of images for exited or dead containers to avoid cleaning, e.g. "ubuntu:trusty, ubuntu:latest".
  * **KEEP_CONTAINERS_NAMED** - List of names for exited or dead containers to avoid cleaning, e.g. "my-container1, persistent-data".
+ * **KEEP_VOLUMES_NAMED** - List of names for volumes to avoid cleaning, e.g. "my-data-volume1, my-data-volume2". Unnamed dangling volumes will always be removed.
  * **LOOP** - Add the ability to do non-looped cleanups, run it once and exit. Options are true, false. Defaults to true to run it forever in loops.
  * **DEBUG** - Set to 1 to enable more debugging output on pattern matches
  * **DOCKER_API_VERSION** - The docker API version to use. This defaults to 1.20, but you can override it here in case the docker version on your host differs from the one that is installed in this container. You can find this on your host system by running `docker version --format '{{.Client.APIVersion}}'`.

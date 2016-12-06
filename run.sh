@@ -3,14 +3,17 @@
 checkPatterns() {
     keepit=$3
     if [ -n "$1" ]; then
-        for PATTERN in $(echo $1 | tr "," "\n"); do
-        if [[ "$2" = $PATTERN* ]]; then
-            if [ $DEBUG ]; then echo "DEBUG: Matches $PATTERN - keeping"; fi
-            keepit=1
+      for PATTERN in $(echo $1 | tr "," "\n"); do
+        if [[ $PATTERN = '.' ]]; then
+          if [ $DEBUG ]; then echo "DEBUG: Global Match $PATTERN - keeping"; fi
+          keepit=1
+        elif [[ "$2" = $PATTERN* ]]; then
+          if [ $DEBUG ]; then echo "DEBUG: Matches $PATTERN - keeping"; fi
+          keepit=1
         else
-            if [ $DEBUG ]; then echo "DEBUG: No match for $PATTERN"; fi
+          if [ $DEBUG ]; then echo "DEBUG: No match for $PATTERN"; fi
         fi
-        done
+      done
     fi
     return $keepit
 }
@@ -27,7 +30,6 @@ else
     echo "Please check if the docker binary is mounted correctly"
     exit 1
 fi
-
 
 if [ "${CLEAN_PERIOD}" == "**None**" ]; then
     echo "=> CLEAN_PERIOD not defined, use the default value."
@@ -46,6 +48,7 @@ fi
 if [ "${KEEP_CONTAINERS}" == "**None**" ]; then
     unset KEEP_CONTAINERS
 fi
+
 if [ "${KEEP_CONTAINERS}" == "**All**" ]; then
     KEEP_CONTAINERS="."
 fi
@@ -53,8 +56,17 @@ fi
 if [ "${KEEP_CONTAINERS_NAMED}" == "**None**" ]; then
     unset KEEP_CONTAINERS_NAMED
 fi
+
 if [ "${KEEP_CONTAINERS_NAMED}" == "**All**" ]; then
     KEEP_CONTAINERS_NAMED="."
+fi
+
+if [ "${KEEP_VOLUMES_NAMED}" == "**None**" ]; then
+    unset KEEP_VOLUMES_NAMED
+fi
+
+if [ "${KEEP_VOLUMES_NAMED}" == "**All**" ]; then
+    KEEP_VOLUMES_NAMED="."
 fi
 
 if [ "${LOOP}" != "false" ]; then
@@ -76,22 +88,33 @@ do
     if [ $DEBUG ]; then echo DEBUG: Starting loop; fi
 
     # Cleanup unused volumes
-
     if [[ $(docker version --format '{{(index .Server.Version)}}' | grep -E '^[01]\.[012345678]\.') ]]; then
       echo "=> Removing unused volumes using 'docker-cleanup-volumes.sh' script"
       /docker-cleanup-volumes.sh
     else
       echo "=> Removing unused volumes using native 'docker volume' command"
-      for volume in $(docker volume ls -qf dangling=true); do
-        echo "Deleting ${volume}"
-        docker volume rm "${volume}"
+      DANGLING_VOLUMES_IDS="`docker volume ls -qf dangling=true | xargs echo`"
+      for VOLUME_ID in $DANGLING_VOLUMES_IDS; do
+        if [ $DEBUG ]; then echo "DEBUG: Check volume $VOLUME_ID"; fi
+        keepit=0
+        if [ ${#VOLUME_ID} -eq 64 ]; then
+          if [ $DEBUG ]; then echo "DEBUG: Volume $VOLUME_ID is unnamed"; fi
+        else
+          if [ $DEBUG ]; then echo "DEBUG: Volume $VOLUME_ID is named"; fi
+          checkPatterns "${KEEP_VOLUMES_NAMED}" "${VOLUME_ID}" $keepit
+          keepit=$?
+        fi
+        if [[ $keepit -eq 0 ]]; then
+          echo "Removing dangling volume $VOLUME_ID"
+          #docker volume rm "${VOLUME_ID}"
+        fi
       done
+      unset VOLUME_ID
     fi
 
     IFS='
  '
 
-    # Cleanup exited/dead containers
     echo "=> Removing exited/dead containers"
     EXITED_CONTAINERS_IDS="`docker ps -a -q -f status=exited -f status=dead | xargs echo`"
     for CONTAINER_ID in $EXITED_CONTAINERS_IDS; do
