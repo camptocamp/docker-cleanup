@@ -106,7 +106,7 @@ do
         fi
         if [[ $keepit -eq 0 ]]; then
           echo "Removing dangling volume $VOLUME_ID"
-          #docker volume rm "${VOLUME_ID}"
+          docker volume rm "${VOLUME_ID}"
         fi
       done
       unset VOLUME_ID
