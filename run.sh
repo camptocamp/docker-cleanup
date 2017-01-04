@@ -119,7 +119,7 @@ do
     EXITED_CONTAINERS_IDS="`docker ps -a -q -f status=exited -f status=dead | xargs echo`"
     for CONTAINER_ID in $EXITED_CONTAINERS_IDS; do
       CONTAINER_IMAGE=$(docker inspect --format='{{(index .Config.Image)}}' $CONTAINER_ID)
-      CONTAINER_NAME=$(docker inspect --format='{{(index .Name)}}' $CONTAINER_ID)
+      CONTAINER_NAME=$(docker inspect --format='{{(index .Name)}}' $CONTAINER_ID | sed 's/^\///')
       if [ $DEBUG ]; then echo "DEBUG: Check container image $CONTAINER_IMAGE named $CONTAINER_NAME"; fi
       keepit=0
       checkPatterns "${KEEP_CONTAINERS}" "${CONTAINER_IMAGE}" $keepit
