@@ -215,8 +215,6 @@ do
             if [[ -n "$PATTERN" && "${repo}:${tag}" = $PATTERN* ]]; then
               if [ $DEBUG ]; then echo "DEBUG: Matches $PATTERN"; fi
               keepit=1
-            else
-              if [ $DEBUG ]; then echo "DEBUG: No match for $PATTERN"; fi
             fi
           done
           if [[ $keepit -eq 1 ]]; then
