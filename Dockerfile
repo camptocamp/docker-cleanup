@@ -13,7 +13,7 @@ ENV CLEAN_PERIOD=**None** \
     DOCKER_API_VERSION=1.20
 
 # run.sh script uses some bash specific syntax
-RUN apk add --update bash docker grep
+RUN apk add --update bash docker grep jq
 
 # Install cleanup script
 ADD docker-cleanup-volumes.sh /docker-cleanup-volumes.sh

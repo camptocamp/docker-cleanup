@@ -31,8 +31,8 @@ else
     exit 1
 fi
 
-if [ "${CLEAN_PERIOD}" == "**None**" ]; then
-    echo "=> CLEAN_PERIOD not defined, use the default value."
+if [ ! "${CLEAN_PERIOD}" ]; then
+    echo "=> CLEAN_PERIOD not defined, use the default value of 1800."
     CLEAN_PERIOD=1800
 fi
 
@@ -69,6 +69,22 @@ if [ "${KEEP_VOLUMES_NAMED}" == "**All**" ]; then
     KEEP_VOLUMES_NAMED="."
 fi
 
+if [ ! $VOLUME_INFOS_IMAGE ]; then
+    VOLUME_INFOS_IMAGE='camptocamp/volume_info'
+fi
+
+if [ ! $DURATION_IMAGE ]; then
+    DURATION_IMAGE='camptocamp/duration'
+fi
+
+if [ ! $KEEP_VOLUMES_ATIME_SINCE ]; then
+    KEEP_VOLUMES_ATIME_SINCE="0"
+fi
+
+if [ ! $KEEP_VOLUMES_MTIME_SINCE ]; then
+    KEEP_VOLUMES_MTIME_SINCE="0"
+fi
+
 if [ "${LOOP}" != "false" ]; then
     LOOP=true
 fi
@@ -79,6 +95,7 @@ fi
 
 if [ $DEBUG ]; then echo DEBUG ENABLED; fi
 
+
 echo "=> Run the clean script every ${CLEAN_PERIOD} seconds and delay ${DELAY_TIME} seconds to clean."
 
 trap '{ echo "User Interupt."; exit 1; }' SIGINT
@@ -87,30 +104,59 @@ while [ 1 ]
 do
     if [ $DEBUG ]; then echo DEBUG: Starting loop; fi
 
-    # Cleanup unused volumes
-    if [[ $(docker version --format '{{(index .Server.Version)}}' | grep -E '^[01]\.[012345678]\.') ]]; then
-      echo "=> Removing unused volumes using 'docker-cleanup-volumes.sh' script"
-      /docker-cleanup-volumes.sh
-    else
-      echo "=> Removing unused volumes using native 'docker volume' command"
-      DANGLING_VOLUMES_IDS="`docker volume ls -qf dangling=true | xargs echo`"
-      for VOLUME_ID in $DANGLING_VOLUMES_IDS; do
-        if [ $DEBUG ]; then echo "DEBUG: Check volume $VOLUME_ID"; fi
-        keepit=0
-        if [ ${#VOLUME_ID} -eq 64 ]; then
-          if [ $DEBUG ]; then echo "DEBUG: Volume $VOLUME_ID is unnamed"; fi
-        else
-          if [ $DEBUG ]; then echo "DEBUG: Volume $VOLUME_ID is named"; fi
-          checkPatterns "${KEEP_VOLUMES_NAMED}" "${VOLUME_ID}" $keepit
-          keepit=$?
+    echo "=> Removing unused volumes using native 'docker volume' command"
+    DANGLING_VOLUMES_IDS="`docker volume ls -qf dangling=true | xargs echo`"
+    for VOLUME_ID in $DANGLING_VOLUMES_IDS; do
+      keepit=0
+      if [ $DEBUG ]; then echo "DEBUG: Check volume $VOLUME_ID"; fi
+      if [ ${#VOLUME_ID} -eq 64 ]; then
+        if [ $DEBUG ]; then echo "DEBUG: Volume is unnamed"; fi
+
+        if [ "${KEEP_VOLUMES_ATIME_SINCE}" != "0" ] || [ "${KEEP_VOLUMES_MTIME_SINCE}" != "0" ]; then
+          VOLUME_INFOS_JSON="`docker run --rm -v $VOLUME_ID:/volume $VOLUME_INFOS_IMAGE`"
+          if [ $DEBUG ]; then echo "DEBUG: Volume infos:"; fi
+          if [ $DEBUG ]; then echo "DEBUG: $VOLUME_INFOS_JSON"; fi
+
+          EMPTY="`echo $VOLUME_INFOS_JSON | jq .isEmpty`"
+
+          if [ ${EMPTY} == "true" ]; then
+            if [ $DEBUG ]; then echo "Volume is empty"; fi
+          else
+            ATIME_SINCE_IN_SECONDS="`docker run --rm $DURATION_IMAGE $KEEP_VOLUMES_ATIME_SINCE`"
+            LAST_ATIME_SINCE="`echo $VOLUME_INFOS_JSON | jq .lastAccess.since`"
+            if [ $DEBUG ]; then echo "DEBUG: Volume last access time was since ${LAST_ATIME_SINCE} seconds."; fi
+            if [ "${LAST_ATIME_SINCE}" -gt ${ATIME_SINCE_IN_SECONDS} ]; then
+              if [ $DEBUG ]; then echo "DEBUG: This is greater than the given ${ATIME_SINCE_IN_SECONDS} seconds (${KEEP_VOLUMES_ATIME_SINCE}) to keep volumes"; fi
+            else
+              keepit=1
+              if [ $DEBUG ]; then echo "DEBUG: This is less than the given ${ATIME_SINCE_IN_SECONDS} seconds (${KEEP_VOLUMES_ATIME_SINCE}) to keep volumes"; fi
+            fi
+
+            MTIME_SINCE_IN_SECONDS="`docker run --rm $DURATION_IMAGE $KEEP_VOLUMES_MTIME_SINCE`"
+            LAST_MTIME_SINCE="`echo $VOLUME_INFOS_JSON | jq .lastModify.since`"
+            if [ $DEBUG ]; then echo "DEBUG: Volume last modification time was since ${LAST_MTIME_SINCE} seconds."; fi
+            if [ "${LAST_MTIME_SINCE}" -gt ${MTIME_SINCE_IN_SECONDS} ]; then
+              if [ $DEBUG ]; then echo "DEBUG: This is greater than the given ${MTIME_SINCE_IN_SECONDS} seconds to keep volumes"; fi
+            else
+              keepit=1
+              if [ $DEBUG ]; then echo "DEBUG: This is less than the given ${MTIME_SINCE_IN_SECONDS} seconds (${KEEP_VOLUMES_MTIME_SINCE}) to keep volumes"; fi
+            fi
+          fi
         fi
-        if [[ $keepit -eq 0 ]]; then
-          echo "Removing dangling volume $VOLUME_ID"
-          docker volume rm "${VOLUME_ID}"
-        fi
-      done
-      unset VOLUME_ID
-    fi
+
+      else
+        if [ $DEBUG ]; then echo "DEBUG: Volume $VOLUME_ID is named"; fi
+        checkPatterns "${KEEP_VOLUMES_NAMED}" "${VOLUME_ID}" $keepit
+        keepit=$?
+      fi
+      if [[ $keepit -eq 0 ]]; then
+        echo "Removing dangling volume $VOLUME_ID"
+        docker volume rm "${VOLUME_ID}"
+      else
+        echo "Keeping dangling volume $VOLUME_ID"
+      fi
+    done
+    unset VOLUME_ID
 
     IFS='
  '
@@ -216,6 +262,12 @@ do
     sort ContainerImageIdList -o ContainerImageIdList
     comm -23 ToBeCleanedImageIdList ContainerImageIdList > ToBeCleaned
 
+    # Keep volume info image
+    docker inspect $VOLUME_INFOS_IMAGE 2>/dev/null| grep "\"Id\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"" | head -1 | awk -F '"' '{print $4}'  >> KeepUtilsImageId
+    docker inspect $DURATION_IMAGE 2>/dev/null| grep "\"Id\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"" | head -1 | awk -F '"' '{print $4}'  >> KeepUtilsImageId
+    comm -23 ToBeCleaned KeepUtilsImageId > ToBeCleaned2
+    mv ToBeCleaned2 ToBeCleaned
+
     # Remove Images
     if [ -s ToBeCleaned ]; then
         echo "=> Start to clean $(cat ToBeCleaned | wc -l) images"
@@ -233,7 +285,8 @@ do
         echo "No images need to be cleaned"
     fi
 
-    rm -f ToBeCleanedImageIdList ContainerImageIdList ToBeCleaned ImageIdList KeepImageIdList
+    # Clean
+    rm -f ToBeCleanedImageIdList ContainerImageIdList ToBeCleaned ImageIdList KeepImageIdList CreatedContainerIdList CreatedContainerToClean KeepVolumeInfoImageId KeepUtilsImageId
 
     # Run forever or exit after the first run depending on the value of $LOOP
     [ "${LOOP}" == "true" ] || break
