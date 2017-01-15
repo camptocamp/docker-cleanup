@@ -70,11 +70,11 @@ if [ "${KEEP_VOLUMES_NAMED}" == "**All**" ]; then
 fi
 
 if [ ! $VOLUME_INFOS_IMAGE ]; then
-    VOLUME_INFOS_IMAGE='camptocamp/volume_info'
+    VOLUME_INFOS_IMAGE='camptocamp/volume_info:1.0.0'
 fi
 
 if [ ! $DURATION_IMAGE ]; then
-    DURATION_IMAGE='camptocamp/duration'
+    DURATION_IMAGE='camptocamp/duration:1.0.0'
 fi
 
 if [ ! $KEEP_VOLUMES_ATIME_SINCE ]; then
@@ -265,6 +265,7 @@ do
     # Keep volume info image
     docker inspect $VOLUME_INFOS_IMAGE 2>/dev/null| grep "\"Id\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"" | head -1 | awk -F '"' '{print $4}'  >> KeepUtilsImageId
     docker inspect $DURATION_IMAGE 2>/dev/null| grep "\"Id\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"" | head -1 | awk -F '"' '{print $4}'  >> KeepUtilsImageId
+    sort KeepUtilsImageId -o KeepUtilsImageId
     comm -23 ToBeCleaned KeepUtilsImageId > ToBeCleaned2
     mv ToBeCleaned2 ToBeCleaned
 
