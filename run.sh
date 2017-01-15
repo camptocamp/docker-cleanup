@@ -10,8 +10,6 @@ checkPatterns() {
         elif [[ "$2" = $PATTERN* ]]; then
           if [ $DEBUG ]; then echo "DEBUG: Matches $PATTERN - keeping"; fi
           keepit=1
-        else
-          if [ $DEBUG ]; then echo "DEBUG: No match for $PATTERN"; fi
         fi
       done
     fi
