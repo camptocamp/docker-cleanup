@@ -67,6 +67,10 @@ if [ "${KEEP_VOLUMES_NAMED}" == "**All**" ]; then
     KEEP_VOLUMES_NAMED="."
 fi
 
+if [ ! $KEEP_VOLUMES_UNNAMED ]; then
+    KEEP_VOLUMES_UNNAMED="true"
+fi
+
 if [ ! $VOLUME_INFOS_IMAGE ]; then
     VOLUME_INFOS_IMAGE='camptocamp/volume_info:1.0.0'
 fi
@@ -82,6 +86,7 @@ fi
 if [ ! $KEEP_VOLUMES_MTIME_SINCE ]; then
     KEEP_VOLUMES_MTIME_SINCE="0"
 fi
+
 
 if [ "${LOOP}" != "false" ]; then
     LOOP=true
@@ -110,7 +115,10 @@ do
       if [ ${#VOLUME_ID} -eq 64 ]; then
         if [ $DEBUG ]; then echo "DEBUG: Volume is unnamed"; fi
 
-        if [ "${KEEP_VOLUMES_ATIME_SINCE}" != "0" ] || [ "${KEEP_VOLUMES_MTIME_SINCE}" != "0" ]; then
+        if [ ${KEEP_VOLUMES_UNNAMED} == "true" ]; then
+          keepit=1
+
+        elif [ "${KEEP_VOLUMES_ATIME_SINCE}" != "0" ] || [ "${KEEP_VOLUMES_MTIME_SINCE}" != "0" ]; then
           VOLUME_INFOS_JSON="`docker run --rm -v $VOLUME_ID:/volume $VOLUME_INFOS_IMAGE`"
           if [ $DEBUG ]; then echo "DEBUG: Volume infos:"; fi
           if [ $DEBUG ]; then echo "DEBUG: $VOLUME_INFOS_JSON"; fi
