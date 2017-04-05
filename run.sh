@@ -16,6 +16,34 @@ checkPatterns() {
     return $keepit
 }
 
+# Remove Images. Read the IDs from the file ToBeCleaned
+# Uses tags if the image has one or more
+removeImages() {
+    if [ -s ToBeCleaned ]; then
+        echo "Start to clean $(cat ToBeCleaned | wc -l) images"
+        for image in $(cat ToBeCleaned)
+        do
+            tags=$(docker inspect --format='{{range $tag := .RepoTags}}{{$tag}}  {{end}}' $image)
+            if [[ -n "$tags" ]]; then
+                docker rmi $tags
+            else
+                docker rmi $image 2>/dev/null
+            fi
+        done
+        (( DIFF_LAYER=${ALL_LAYER_NUM}- $(docker images -a | tail -n +2 | wc -l) ))
+        (( DIFF_IMG=$(cat ImageIdList | wc -l) - $(docker images | tail -n +2 | wc -l) ))
+        if [ ! ${DIFF_LAYER} -gt 0 ]; then
+                DIFF_LAYER=0
+        fi
+        if [ ! ${DIFF_IMG} -gt 0 ]; then
+                DIFF_IMG=0
+        fi
+        echo "Done! ${DIFF_IMG} images and ${DIFF_LAYER} layers have been cleaned."
+    else
+        echo "No images need to be cleaned"
+    fi
+}
+
 if [ ! -e "/var/run/docker.sock" ]; then
     echo "=> Cannot find docker socket(/var/run/docker.sock), please check the command!"
     exit 1
@@ -274,21 +302,7 @@ do
     mv ToBeCleaned2 ToBeCleaned
 
     # Remove Images
-    if [ -s ToBeCleaned ]; then
-        echo "=> Start to clean $(cat ToBeCleaned | wc -l) images"
-        docker rmi $(cat ToBeCleaned) 2>/dev/null
-        (( DIFF_LAYER=${ALL_LAYER_NUM}- $(docker images -a | tail -n +2 | wc -l) ))
-        (( DIFF_IMG=$(cat ImageIdList | wc -l) - $(docker images | tail -n +2 | wc -l) ))
-        if [ ! ${DIFF_LAYER} -gt 0 ]; then
-                DIFF_LAYER=0
-        fi
-        if [ ! ${DIFF_IMG} -gt 0 ]; then
-                DIFF_IMG=0
-        fi
-        echo "=> Done! ${DIFF_IMG} images and ${DIFF_LAYER} layers have been cleaned."
-    else
-        echo "No images need to be cleaned"
-    fi
+    removeImages
 
     # Clean
     rm -f ToBeCleanedImageIdList ContainerImageIdList ToBeCleaned ImageIdList KeepImageIdList CreatedContainerIdList CreatedContainerToClean KeepVolumeInfoImageId KeepUtilsImageId
