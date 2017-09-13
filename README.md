@@ -45,7 +45,7 @@ However it will not match
  * :tag
  * [[:alpha:]]:tag
 
-By default, both are set to \*\*None\*\* which is the same as the blank string.  If you want to keep ALL images, containers or volumes then you should use \*\*All\*\* to match all items. Do not use a bare **\*** as this will be taken as a filename match. Note that with KEEP_VOLUMES_NAMED, **All** will keep all named volumes, but still delete the unnamed ones.
+By default, both are set to \*\*None\*\* which is the same as the blank string.  If you want to keep ALL images, containers or volumes then you should use \*\*All\*\* to match all items. Do not use a bare **\*** as this will be taken as a filename match. Note that with KEEP_VOLUMES_NAMED, \*\*All\*\* will keep all named volumes, but still delete the unnamed ones.
 
 ## Deployment
 The image uses the Docker client to to list and remove containers and images. For this reason the Docker client and socket is mapped into the container.
