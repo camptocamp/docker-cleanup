@@ -10,6 +10,8 @@ checkPatterns() {
         elif [[ "$2" = $PATTERN* ]]; then
           if [ $DEBUG ]; then echo "DEBUG: Matches $PATTERN - keeping"; fi
           keepit=1
+        else
+          if [ $DEBUG ]; then echo "DEBUG: No match for $PATTERN"; fi
         fi
       done
     fi
@@ -30,8 +32,8 @@ removeImages() {
                 docker rmi $image 2>/dev/null
             fi
         done
-        (( DIFF_LAYER=${ALL_LAYER_NUM}- $(docker images -a | tail -n +2 | wc -l) ))
-        (( DIFF_IMG=$(cat ImageIdList | wc -l) - $(docker images | tail -n +2 | wc -l) ))
+        (( DIFF_LAYER=${ALL_LAYER_NUM}- $(docker images -aq | wc -l) ))
+        (( DIFF_IMG=$(cat ImageIdList | wc -l) - $(docker images -q | wc -l) ))
         if [ ! ${DIFF_LAYER} -gt 0 ]; then
                 DIFF_LAYER=0
         fi
@@ -124,23 +126,132 @@ if [ "${DEBUG}" == "0" ]; then
     unset DEBUG
 fi
 
-if [ $DEBUG ]; then echo DEBUG ENABLED; fi
+if [ $DEBUG ]; then echo "DEBUG ENABLED"; fi
 
 
 echo "=> Run the clean script every ${CLEAN_PERIOD} seconds and delay ${DELAY_TIME} seconds to clean."
 
 trap '{ echo "User Interupt."; exit 1; }' SIGINT
 trap '{ echo "SIGTERM received, exiting."; exit 0; }' SIGTERM
+# TODO: Is this still needed?
+IFS='
+ '
 while [ 1 ]
 do
-    if [ $DEBUG ]; then echo DEBUG: Starting loop; fi
+    if [ $DEBUG ]; then echo "DEBUG: Starting loop"; fi
+
+    # Get all image ID for stats reporting in removeImages().
+    # Stats can be affected by outside operations
+    ALL_LAYER_NUM=$(docker images -aq | wc -l)
+    docker images -q --no-trunc | sort -o ImageIdList
+
+
+    echo "=> Removing exited/dead containers"
+    EXITED_CONTAINERS_IDS="`docker ps -a -q -f status=exited -f status=dead | xargs echo`"
+    for CONTAINER_ID in $EXITED_CONTAINERS_IDS; do
+      CONTAINER_IMAGE=$(docker inspect --format='{{(index .Config.Image)}}' $CONTAINER_ID)
+      CONTAINER_NAME=$(docker inspect --format='{{(index .Name)}}' $CONTAINER_ID | sed 's/^\///')
+      # TODO: Add label collection
+      if [ $DEBUG ]; then echo "DEBUG: Check container image $CONTAINER_IMAGE named $CONTAINER_NAME"; fi
+      keepit=0
+      checkPatterns "${KEEP_CONTAINERS}" "${CONTAINER_IMAGE}" $keepit
+      keepit=$?
+      checkPatterns "${KEEP_CONTAINERS_NAMED}" "${CONTAINER_NAME}" $keepit
+      keepit=$?
+      # TODO: Add label check.  Look at jq vs sed
+      if [[ $keepit -eq 0 ]]; then
+        echo "Removing stopped container $CONTAINER_ID"
+        # No -v for safety in case of shared volumes.  Remove unused volumes at the end.
+        docker rm $CONTAINER_ID
+      fi
+    done
+    unset CONTAINER_ID
+
+
+    echo "=> Looking for unstarted created containers"
+    # Get all containers in "created" state
+    rm -f CreatedContainerIdList
+    docker ps -a -q -f status=created | sort > CreatedContainerIdList
+
+    if [[ $(cat CreatedContainerIdList | wc -l) -eq 1 ]]; then
+      # Wait before cleaning containers and images
+      echo "=> Waiting ${DELAY_TIME} seconds before cleaning"
+      sleep ${DELAY_TIME} & wait
+
+      echo "=> Removing unstarted created containers"
+      # Remove created containers that haven't managed to start within the DELAY_TIME interval
+      rm -f CreatedContainerToClean
+      comm -12 CreatedContainerIdList <(docker ps -a -q -f status=created | sort) > CreatedContainerToClean
+      if [ -s CreatedContainerToClean ]; then
+          echo "=> Start to clean $(cat CreatedContainerToClean | wc -l) created/stuck containers"
+          if [ $DEBUG ]; then echo "DEBUG: Removing unstarted containers"; fi
+          # No -v for safety in case of shared volumes.  Remove unused volumes at the end.
+          docker rm $(cat CreatedContainerToClean)
+      fi
+    else
+      if [ $DEBUG ]; then echo "DEBUG: No unstarted created containers found.  Skipping delay time"; fi
+    fi
+
+
+    echo "=> Removing unused images"
+    CONTAINER_ID_LIST=$(docker ps -aq --no-trunc)
+    # Get Image ID that is used by a containter
+    rm -f ContainerImageIdList
+    touch ContainerImageIdList
+    for CONTAINER_ID in ${CONTAINER_ID_LIST}; do
+        echo "$(docker inspect ${CONTAINER_ID} --format='{{.Image}}')" >> ContainerImageIdList
+    done
+    sort ContainerImageIdList -o ContainerImageIdList
+
+    # Remove the images being used by containers from the delete list
+    comm -23 ImageIdList ContainerImageIdList > ToBeCleanedImageIdList
+
+    # Remove those reserved images from the delete list
+    if [ -n "${KEEP_IMAGES}" ]; then
+      rm -f KeepImageIdList
+      touch KeepImageIdList
+      # This looks to see if anything matches the pattern
+      docker images --no-trunc | (
+        while read repo tag image junk; do
+          keepit=0
+          if [ $DEBUG ]; then echo "DEBUG: Check image $repo:$tag"; fi
+          checkPatterns "${KEEP_IMAGES}" "${repo}:${tag}" $keepit
+          keepit=$?
+          if [[ $keepit -eq 1 ]]; then
+            if [ $DEBUG ]; then echo "DEBUG: Marking image $repo:$tag to keep"; fi
+            echo $image >> KeepImageIdList
+          fi
+        done
+      )
+      # This explicitly looks for the images specified
+      arr=$(echo ${KEEP_IMAGES} | tr "," "\n")
+      for x in $arr
+      do
+          if [ $DEBUG ]; then echo "DEBUG: Identifying image $x"; fi
+          docker image inspect $x --format='{{.Id}}' 2>/dev/null >> KeepImageIdList
+      done
+      sort KeepImageIdList -o KeepImageIdList
+      comm -23 ToBeCleanedImageIdList KeepImageIdList > ToBeCleanedImageIdList2
+      mv ToBeCleanedImageIdList2 ToBeCleanedImageIdList
+    fi
+
+    # Keep volume info image
+    docker inspect $VOLUME_INFOS_IMAGE --format='{{.Id}}' 2>/dev/null >> KeepUtilsImageId
+    docker inspect $DURATION_IMAGE --format='{{.Id}}' 2>/dev/null >> KeepUtilsImageId
+    sort KeepUtilsImageId -o KeepUtilsImageId
+    comm -23 ToBeCleaned KeepUtilsImageId > ToBeCleaned2
+    mv ToBeCleaned2 ToBeCleaned
+
+    # Remove Images
+    removeImages
+
 
     echo "=> Removing unused volumes using native 'docker volume' command"
     DANGLING_VOLUMES_IDS="`docker volume ls -qf dangling=true | xargs echo`"
     for VOLUME_ID in $DANGLING_VOLUMES_IDS; do
       keepit=0
       if [ $DEBUG ]; then echo "DEBUG: Check volume $VOLUME_ID"; fi
-      if [ ${#VOLUME_ID} -eq 64 ]; then
+      if [ ${#VOLUME_ID} -eq 64 ]; then   # TODO: Improve assumption here.  Length of 64 means unnamed?  RegEx match?  https://tldp.org/LDP/Bash-Beginners-Guide/html/sect_10_03.html
         if [ $DEBUG ]; then echo "DEBUG: Volume is unnamed"; fi
 
         if [ ${KEEP_VOLUMES_UNNAMED} == "true" ]; then
@@ -154,7 +265,7 @@ do
           EMPTY="`echo $VOLUME_INFOS_JSON | jq .isEmpty`"
 
           if [ ${EMPTY} == "true" ]; then
-            if [ $DEBUG ]; then echo "Volume is empty"; fi
+            if [ $DEBUG ]; then echo "DEBUG: Volume is empty"; fi
           else
             ATIME_SINCE_IN_SECONDS="`docker run --rm $DURATION_IMAGE $KEEP_VOLUMES_ATIME_SINCE`"
             LAST_ATIME_SINCE="`echo $VOLUME_INFOS_JSON | jq .lastAccess.since`"
@@ -192,123 +303,14 @@ do
     done
     unset VOLUME_ID
 
-    IFS='
- '
 
-    echo "=> Removing exited/dead containers"
-    EXITED_CONTAINERS_IDS="`docker ps -a -q -f status=exited -f status=dead | xargs echo`"
-    for CONTAINER_ID in $EXITED_CONTAINERS_IDS; do
-      CONTAINER_IMAGE=$(docker inspect --format='{{(index .Config.Image)}}' $CONTAINER_ID)
-      CONTAINER_NAME=$(docker inspect --format='{{(index .Name)}}' $CONTAINER_ID | sed 's/^\///')
-      if [ $DEBUG ]; then echo "DEBUG: Check container image $CONTAINER_IMAGE named $CONTAINER_NAME"; fi
-      keepit=0
-      checkPatterns "${KEEP_CONTAINERS}" "${CONTAINER_IMAGE}" $keepit
-      keepit=$?
-      checkPatterns "${KEEP_CONTAINERS_NAMED}" "${CONTAINER_NAME}" $keepit
-      keepit=$?
-      if [[ $keepit -eq 0 ]]; then
-        echo "Removing stopped container $CONTAINER_ID"
-        docker rm -v $CONTAINER_ID
-      fi
-    done
-    unset CONTAINER_ID
-
-    echo "=> Removing unused images"
-
-    # Get all containers in "created" state
-    rm -f CreatedContainerIdList
-    docker ps -a -q -f status=created | sort > CreatedContainerIdList
-
-    # Get all image ID
-    ALL_LAYER_NUM=$(docker images -a | tail -n +2 | wc -l)
-    docker images -q --no-trunc | sort -o ImageIdList
-    CONTAINER_ID_LIST=$(docker ps -aq --no-trunc)
-    # Get Image ID that is used by a containter
-    rm -f ContainerImageIdList
-    touch ContainerImageIdList
-    for CONTAINER_ID in ${CONTAINER_ID_LIST}; do
-        LINE=$(docker inspect ${CONTAINER_ID} | grep "\"Image\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"")
-        IMAGE_ID=$(echo ${LINE} | awk -F '"' '{print $4}')
-        echo "${IMAGE_ID}" >> ContainerImageIdList
-    done
-    sort ContainerImageIdList -o ContainerImageIdList
-
-    # Remove the images being used by containers from the delete list
-    comm -23 ImageIdList ContainerImageIdList > ToBeCleanedImageIdList
-
-    # Remove those reserved images from the delete list
-    if [ -n "${KEEP_IMAGES}" ]; then
-      rm -f KeepImageIdList
-      touch KeepImageIdList
-      # This looks to see if anything matches the regexp
-      docker images --no-trunc | (
-        while read repo tag image junk; do
-          keepit=0
-          if [ $DEBUG ]; then echo "DEBUG: Check image $repo:$tag"; fi
-          for PATTERN in $(echo ${KEEP_IMAGES} | tr "," "\n"); do
-            if [[ -n "$PATTERN" && "${repo}:${tag}" = $PATTERN* ]]; then
-              if [ $DEBUG ]; then echo "DEBUG: Matches $PATTERN"; fi
-              keepit=1
-            fi
-          done
-          if [[ $keepit -eq 1 ]]; then
-            if [ $DEBUG ]; then echo "DEBUG: Marking image $repo:$tag to keep"; fi
-            echo $image >> KeepImageIdList
-          fi
-        done
-      )
-      # This explicitly looks for the images specified
-      arr=$(echo ${KEEP_IMAGES} | tr "," "\n")
-      for x in $arr
-      do
-          if [ $DEBUG ]; then echo "DEBUG: Identifying image $x"; fi
-          docker inspect $x 2>/dev/null| grep "\"Id\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"" | head -1 | awk -F '"' '{print $4}'  >> KeepImageIdList
-      done
-      sort KeepImageIdList -o KeepImageIdList
-      comm -23 ToBeCleanedImageIdList KeepImageIdList > ToBeCleanedImageIdList2
-      mv ToBeCleanedImageIdList2 ToBeCleanedImageIdList
-    fi
-
-    # Wait before cleaning containers and images
-    echo "=> Waiting ${DELAY_TIME} seconds before cleaning"
-    sleep ${DELAY_TIME} & wait
-
-    # Remove created containers that haven't managed to start within the DELAY_TIME interval
-    rm -f CreatedContainerToClean
-    comm -12 CreatedContainerIdList <(docker ps -a -q -f status=created | sort) > CreatedContainerToClean
-    if [ -s CreatedContainerToClean ]; then
-        echo "=> Start to clean $(cat CreatedContainerToClean | wc -l) created/stuck containers"
-        if [ $DEBUG ]; then echo "DEBUG: Removing unstarted containers"; fi
-        docker rm -v $(cat CreatedContainerToClean)
-    fi
-
-    # Remove images being used by containers from the delete list again. This prevents the images being pulled from deleting
-    CONTAINER_ID_LIST=$(docker ps -aq --no-trunc)
-    rm -f ContainerImageIdList
-    touch ContainerImageIdList
-    for CONTAINER_ID in ${CONTAINER_ID_LIST}; do
-        LINE=$(docker inspect ${CONTAINER_ID} | grep "\"Image\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"")
-        IMAGE_ID=$(echo ${LINE} | awk -F '"' '{print $4}')
-        echo "${IMAGE_ID}" >> ContainerImageIdList
-    done
-    sort ContainerImageIdList -o ContainerImageIdList
-    comm -23 ToBeCleanedImageIdList ContainerImageIdList > ToBeCleaned
-
-    # Keep volume info image
-    docker inspect $VOLUME_INFOS_IMAGE 2>/dev/null| grep "\"Id\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"" | head -1 | awk -F '"' '{print $4}'  >> KeepUtilsImageId
-    docker inspect $DURATION_IMAGE 2>/dev/null| grep "\"Id\": \"\(sha256:\)\?[0-9a-fA-F]\{64\}\"" | head -1 | awk -F '"' '{print $4}'  >> KeepUtilsImageId
-    sort KeepUtilsImageId -o KeepUtilsImageId
-    comm -23 ToBeCleaned KeepUtilsImageId > ToBeCleaned2
-    mv ToBeCleaned2 ToBeCleaned
-
-    # Remove Images
-    removeImages
-
+    echo "=> Performing cleanup"
     # Clean
     rm -f ToBeCleanedImageIdList ContainerImageIdList ToBeCleaned ImageIdList KeepImageIdList CreatedContainerIdList CreatedContainerToClean KeepVolumeInfoImageId KeepUtilsImageId
 
     # Run forever or exit after the first run depending on the value of $LOOP
     [ "${LOOP}" == "true" ] || break
+
 
     echo "=> Next clean will be started in ${CLEAN_PERIOD} seconds"
     sleep ${CLEAN_PERIOD} & wait
